@@ -1,15 +1,23 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "telegram-filename-forward-bot",
-  "main": "index.js",
-  "compatibility_date": "2026-08-08",
+  "name": "filerename",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-28",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "kv_namespaces": [
+    { "binding": "KV_BINDING", "id": "ba8d2956c9ae45c98d7d7ee6364c352e" }
+  ],
+
+  "vars": {
+    "ADMIN_ID": "6948271128",
+    "CHATTING_URL": "https://t.me/addlist/9bXYch7HNR41NDE1",
+    "LOG_CHANNEL": "-1003723799199",
+    "WEBSITE_URL": "https://mov4khub.blogspot.com/"
+  },
 
   "durable_objects": {
     "bindings": [
-      {
-        "name": "BOT_STATE",
-        "class_name": "BotState"
-      }
+      { "name": "BOT_STATE", "class_name": "BotState" }
     ]
   },
 
@@ -20,7 +28,7 @@
     }
   ],
 
-  "vars": {
-    "DATABASE_CHANNEL_ID": "-1003862343915"
+  "observability": {
+    "enabled": true
   }
 }
