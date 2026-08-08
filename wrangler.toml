@@ -1,7 +1,0 @@
-name = "telegram-thumbnail-bot"
-main = "src/index.js"
-compatibility_date = "2024-11-01"
-
-[[durable_objects.bindings]]
-name = "THUMB_STORE"
-class_name = "ThumbStore"
