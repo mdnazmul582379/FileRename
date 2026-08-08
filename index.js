@@ -18,12 +18,16 @@ export default {
     if (!uid || !String(env.ADMIN_IDS || "").split(",").map(x => x.trim()).includes(uid))
       return new Response("OK");
 
-    const id = env.BOT_STATE.idFromName("global");
-    await env.BOT_STATE.get(id).fetch("https://do/update", {
-      method: "POST",
-      headers: {"content-type":"application/json"},
-      body: JSON.stringify({ update })
-    });
+    try {
+      const id = env.BOT_STATE.idFromName("global");
+      await env.BOT_STATE.get(id).fetch("https://do/update", {
+        method: "POST",
+        headers: {"content-type":"application/json"},
+        body: JSON.stringify({ update })
+      });
+    } catch (e) {
+      console.error("BOT_STATE dispatch failed:", e);
+    }
     return new Response("OK");
   }
 };
@@ -33,13 +37,21 @@ export class BotState {
 
   async fetch(request) {
     if (request.method !== "POST") return new Response("OK");
-    try { await this.handle(await request.json()); }
-    catch (e) { console.error(e); }
+    let body;
+    try {
+      body = await request.json();
+      await this.handle(body.update);
+    } catch (e) {
+      console.error("handle() failed for update", body?.update?.update_id, ":", e);
+    }
     return new Response("OK");
   }
 
   async handle(update) {
-    if (!this.env.BOT_TOKEN || !this.env.DATABASE_CHANNEL_ID) return;
+    if (!this.env.BOT_TOKEN) {
+      console.error("BOT_TOKEN is not set - check Variables and Secrets for this Worker.");
+      return;
+    }
 
     if (update?.callback_query) return this.callback(update.callback_query);
 
@@ -137,6 +149,11 @@ export class BotState {
     }
     if (s.state === "sending") return;
 
+    if (!this.env.DATABASE_CHANNEL_ID) {
+      console.error("DATABASE_CHANNEL_ID is not set - check Variables and Secrets for this Worker.");
+      return send(this.token, uid, "Cannot send: DATABASE_CHANNEL_ID is not configured on the Worker. Please set it and try again.");
+    }
+
     if (s.ready_message_id) await del(this.token, uid, s.ready_message_id);
 
     s.state = "sending";
@@ -159,6 +176,12 @@ export class BotState {
   async alarm() {
     const s = await this.getSession();
     if (s.state !== "sending" || !s.items?.length) return;
+
+    if (!this.env.DATABASE_CHANNEL_ID) {
+      console.error("DATABASE_CHANNEL_ID is not set - aborting scheduled send.");
+      await send(this.token, s.owner_id, "Cannot send: DATABASE_CHANNEL_ID is not configured on the Worker.");
+      return;
+    }
 
     try {
       const item = s.items.shift();
