@@ -9,13 +9,5 @@
         "class_name": "ThumbStore"
       }
     ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": [
-        "ThumbStore"
-      ]
-    }
-  ]
+  }
 }

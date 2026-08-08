@@ -190,6 +190,12 @@ async function handleUpdate(update, env) {
             text: "Failed to set thumbnail: " + (result.description || "Unknown error"),
             reply_markup: MAIN_KEYBOARD,
           });
+        } else {
+          await tgApiJson(env, "sendMessage", {
+            chat_id: chatId,
+            text: "Done. If the preview above still looks like the old thumbnail, forward it to another chat or reopen the app \u2014 Telegram sometimes caches the old preview locally for a file it has already shown in this chat.",
+            reply_markup: MAIN_KEYBOARD,
+          });
         }
         return;
       }
@@ -198,10 +204,11 @@ async function handleUpdate(update, env) {
         data.mode = "idle";
         await stub.setData(data);
 
-        if (video.thumb && video.thumb.file_id) {
+        const existingThumb = video.thumbnail || video.thumb;
+        if (existingThumb && existingThumb.file_id) {
           await tgApiJson(env, "sendPhoto", {
             chat_id: chatId,
-            photo: video.thumb.file_id,
+            photo: existingThumb.file_id,
             caption: "Extracted thumbnail",
           });
           await tgApiJson(env, "sendVideo", {
