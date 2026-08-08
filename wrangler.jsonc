@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "telegram-filename-forward-bot",
+  "main": "index.js",
+  "compatibility_date": "2026-08-08",
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BOT_STATE",
+        "class_name": "BotState"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BotState"]
+    }
+  ],
+
+  "vars": {
+    "DATABASE_CHANNEL_ID": "-1000000000000"
+  }
+}
