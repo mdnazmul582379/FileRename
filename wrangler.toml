@@ -5,11 +5,3 @@ compatibility_date = "2024-11-01"
 [[durable_objects.bindings]]
 name = "THUMB_STORE"
 class_name = "ThumbStore"
-
-[[migrations]]
-tag = "thumbnail-v1"
-new_sqlite_classes = ["ThumbStore"]
-
-[[migrations]]
-tag = "thumbnail-v2"
-deleted_classes = ["BotState"]
