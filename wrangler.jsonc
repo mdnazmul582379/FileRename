@@ -1,6 +1,6 @@
 {
   "name": "filerename",
-  "main": "src/index.js",
+  "main": "index.js",
   "compatibility_date": "2024-11-01",
   "durable_objects": {
     "bindings": [
@@ -9,5 +9,13 @@
         "class_name": "ThumbStore"
       }
     ]
-  }
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ThumbStore"
+      ]
+    }
+  ]
 }
