@@ -2,7 +2,6 @@
   "name": "filerename",
   "main": "index.js",
   "compatibility_date": "2026-08-09",
-
   "durable_objects": {
     "bindings": [
       {
@@ -11,18 +10,17 @@
       }
     ]
   },
-
   "migrations": [
     {
-      "tag": "v2",
-      "deleted_classes": [
-        "ThumbStore"
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "BotState"
       ]
     }
   ],
-
   "vars": {
     "ADMIN_IDS": "1830818828",
-    "DATABASE_CHANNEL_ID": "-1003862343915"
+    "DATABASE_CHANNEL_ID": "-1003862343915",
+    "BOT_TOKEN": "8791662970:AAHBlpWmLSl8LIDTvZT6PuLLV6gtxfo7YQ8"
   }
 }

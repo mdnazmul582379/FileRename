@@ -69,7 +69,6 @@ export class BotState {
     const s = await this.getSession();
 
     if (text === "/start") return this.showMainMenu(uid, s);
-    if (text === "/send") return this.startSending(uid, s);
     if (text === "/cancel") return this.cancelToMain(uid, s);
 
     if (text === "Add Thumbnail") return this.enterThumb(uid, s);
@@ -77,26 +76,25 @@ export class BotState {
 
     if (s.mode === "thumb") return this.handleThumbMsg(uid, s, msg, text);
 
-    // File Rename is now automatic. There is no Done button and no file-ID entry.
-    // Every incoming video/document is processed immediately from the message
-    // itself and remains editable until the user sends it.
     if (s.mode === "rename") {
+      if (text === "Done") return this.renameDone(uid, s);
+      if (text === "Cancel") return this.renameCancel(uid, s);
+      if (text === "Preview") return this.renamePreview(uid, s);
       if (text === "Edit Data") return this.renameEditPrompt(uid, s);
       if (text === "View Data") return this.renameViewData(uid, s);
       if (text === "Clear All") return this.renameClearAll(uid, s);
       if (text === "Back") return this.backToMenu(uid, s);
-      if (text === "Send Post") return this.startSending(uid, s);
-      if (text === "Cancel") return this.cancelEditSession(uid, s);
+
       if (s.awaiting_edit && text) return this.applyEdit(uid, s, text);
       if (msg.video || msg.document) return this.collect(msg, s);
       return;
     }
 
-    // A file sent while idle automatically starts the editing session.
+    // If a file arrives while the bot is idle, enter rename mode automatically.
     if (msg.video || msg.document) {
       s.mode = "rename";
       s.owner_id = uid;
-      s.state = "rename_editing";
+      s.state = "rename_collecting";
       if (!Array.isArray(s.items)) s.items = [];
       await this.state.storage.put("session", s);
       return this.collect(msg, s);
@@ -108,25 +106,28 @@ export class BotState {
   async callback(cq) {
     const uid = String(cq.from.id);
     const data = String(cq.data || "");
-    const s = await this.getSession();
+
+    if (data === "preview_continue") {
+      await ack(this.token, cq.id);
+      const s = await this.getSession();
+      if (s.mode !== "rename" || !s.items?.length) return;
+      if (s.preview_control_id) {
+        await del(this.token, uid, s.preview_control_id);
+        s.preview_control_id = null;
+      }
+      await this.state.storage.put("session", s);
+      return this.sendPreviewBatch(uid, s, false);
+    }
 
     if (data === "send") {
       await ack(this.token, cq.id);
+      const s = await this.getSession();
       return this.startSending(uid, s);
     }
 
     if (data === "cancel_send") {
-      await ack(this.token, cq.id, "Cancelled. Your edits are preserved.");
-      if (s.send_control_id) {
-        await del(this.token, uid, s.send_control_id);
-        s.send_control_id = null;
-      }
-      s.state = s.items?.length ? "rename_editing" : "idle";
-      await this.state.storage.put("session", s);
-      return send(this.token, uid,
-        "<b>Sending cancelled.</b>\n\nYour edited files are still saved. Use <code>/send</code> whenever you want to send them.",
-        s.items?.length ? renameEditKeyboard() : mainKeyboard()
-      );
+      await ack(this.token, cq.id, "Cancelled");
+      return;
     }
 
     await ack(this.token, cq.id);
@@ -141,6 +142,8 @@ export class BotState {
     s.state = "idle";
     s.awaiting_edit = false;
     s.awaiting_thumb_photo = false;
+    s.preview_index = 0;
+    s.preview_control_id = null;
     await this.state.storage.put("session", s);
     await send(this.token, uid,
       "<b>Channel File Manager</b>\n\nChoose an action from the keyboard below.",
@@ -154,7 +157,11 @@ export class BotState {
     s.state = "idle";
     s.awaiting_edit = false;
     s.awaiting_thumb_photo = false;
+    s.preview_index = 0;
+    s.preview_control_id = null;
     await this.state.storage.put("session", s);
+
+    // Remove the current mode keyboard first. The next main-menu message restores it.
     await send(this.token, uid, "Returning to the main menu.", removeKeyboard());
     await send(this.token, uid, "<b>Main Menu</b>", mainKeyboard());
   }
@@ -166,41 +173,44 @@ export class BotState {
     s.items = [];
     s.awaiting_edit = false;
     s.awaiting_thumb_photo = false;
+    s.preview_index = 0;
+    s.preview_control_id = null;
     await this.state.storage.put("session", s);
     await send(this.token, uid, "Operation cancelled.", removeKeyboard());
     await send(this.token, uid, "<b>Main Menu</b>", mainKeyboard());
   }
 
   async clearTransientMessages(uid, s) {
-    for (const id of [s.status_id, s.ready_message_id, s.progress_message_id, s.preview_control_id, s.send_control_id]) {
+    for (const id of [s.status_id, s.ready_message_id, s.progress_message_id, s.preview_control_id]) {
       if (id) await del(this.token, uid, id);
     }
     s.status_id = null;
     s.ready_message_id = null;
     s.progress_message_id = null;
     s.preview_control_id = null;
-    s.send_control_id = null;
   }
 
   // -------------------------------------------------------------------
-  // FILE RENAME / CAPTION EDITING
+  // FILE RENAME
   // -------------------------------------------------------------------
   async enterRename(uid, s) {
     s.mode = "rename";
     s.owner_id = uid;
-    s.state = s.items?.length ? "rename_editing" : "rename_collecting";
     if (!Array.isArray(s.items)) s.items = [];
+    if (!s.items.length) s.state = "rename_collecting";
     s.awaiting_edit = false;
+    s.preview_index = 0;
     await this.state.storage.put("session", s);
 
-    await send(this.token, uid,
-      s.items.length
-        ? `<b>File Rename</b>
+    // Never create a second status message when entering the same mode again.
+    if (s.status_id) {
+      await edit(this.token, uid, s.status_id, renameStatusText(s.items.length), renameCollectKeyboard());
+      return;
+    }
 
-${s.items.length} file(s) are ready for editing. New files will be processed automatically.`
-        : "<b>File Rename</b>\n\nSend video or document files. Each file will be processed automatically.",
-      renameEditKeyboard()
-    );
+    const m = await send(this.token, uid, renameStatusText(s.items.length), renameCollectKeyboard());
+    s.status_id = m?.message_id || null;
+    await this.state.storage.put("session", s);
   }
 
   async collect(msg, s) {
@@ -208,129 +218,173 @@ ${s.items.length} file(s) are ready for editing. New files will be processed aut
     if (!item) return;
     if (!Array.isArray(s.items)) s.items = [];
 
-    // The Telegram message is the source of truth. No manual file ID is required.
-    const sourceChatId = String(msg.chat?.id || msg.from?.id || s.owner_id || "");
-    const sourceMessageId = Number(msg.message_id);
-    const sourceKey = `${sourceChatId}:${sourceMessageId}`;
-    if (s.items.some(x => x.source_key === sourceKey || x.file_unique_id === item.unique_id)) return;
-
-    const sourceCaption = String(msg.caption || "").trim();
-    const baseName = captionFilename(sourceCaption) || item.filename;
-    const formatted = formatFilename(baseName);
-
-    item.source_chat_id = sourceChatId;
-    item.source_message_id = sourceMessageId;
-    item.source_key = sourceKey;
-    item.original_caption = sourceCaption;
-    item.formatted_caption = sourceCaption ? formatCaption(sourceCaption, baseName) : formatted;
-    item.formatted = formatted;
-    item.override = false;
-    item.custom_thumb_file_id = s.thumb_file_id || null;
+    if (s.items.some(x => x.file_id === item.file_id)) return;
 
     s.items.push(item);
     s.owner_id = s.owner_id || String(msg.from?.id || "");
-    s.mode = "rename";
-    s.state = "rename_editing";
-    s.awaiting_edit = false;
+    s.state = "rename_collecting";
     await this.state.storage.put("session", s);
 
-    // Keep exactly one live final control message. It is edited/updated as files arrive.
-    return this.updateSendControl(s.owner_id, s);
-  }
-
-  async updateSendControl(uid, s) {
-    if (!s.items?.length) return;
-    const count = s.items.length;
-    const text = `<b>${count} file(s) ready.</b>
-
-Captions are processed automatically. You can keep sending files or edit any caption before sending.`;
-    const markup = {
-      inline_keyboard: [[
-        { text: "Send Post", callback_data: "send" },
-        { text: "Cancel", callback_data: "cancel_send" }
-      ]]
-    };
-
-    if (s.send_control_id) {
-      const ok = await edit(this.token, uid, s.send_control_id, text, markup);
+    // One message only: edit the original counter from 1 -> 2 -> 3...
+    if (s.status_id) {
+      const ok = await edit(this.token, s.owner_id, s.status_id,
+        renameStatusText(s.items.length), renameCollectKeyboard());
       if (ok) return;
-      s.send_control_id = null;
     }
 
-    const m = await send(this.token, uid, text, markup);
-    s.send_control_id = m?.message_id || null;
+    const m = await send(this.token, s.owner_id,
+      renameStatusText(s.items.length), renameCollectKeyboard());
+    s.status_id = m?.message_id || null;
     await this.state.storage.put("session", s);
+  }
+
+  async renameDone(uid, s) {
+    if (!s.items?.length) {
+      return send(this.token, uid, "No files have been collected yet.", renameCollectKeyboard());
+    }
+
+    s.items = s.items.map(x => x.override ? x : { ...x, formatted: formatFilename(x.filename) });
+    s.state = "rename_ready";
+    s.awaiting_edit = false;
+    s.preview_index = 0;
+
+    if (s.status_id) {
+      await del(this.token, uid, s.status_id);
+      s.status_id = null;
+    }
+    await this.state.storage.put("session", s);
+
+    const text = `<b>${s.items.length} file(s) ready.</b>\n\nSelect <b>Preview</b> to review the actual files.`;
+    if (s.ready_message_id) await del(this.token, uid, s.ready_message_id);
+
+    // Reply keyboards cannot be attached to an inline-keyboard message.
+    // This single message replaces Done/Cancel with the ready-mode keyboard.
+    const m = await send(this.token, uid, text, renameReadyKeyboard());
+    s.ready_message_id = m?.message_id || null;
+    await this.state.storage.put("session", s);
+  }
+
+  async renamePreview(uid, s) {
+    if (!s.items?.length) return send(this.token, uid, "No files have been collected yet.", renameReadyKeyboard());
+
+    // Start from the first item every time Preview is pressed.
+    s.preview_index = 0;
+    if (s.preview_control_id) {
+      await del(this.token, uid, s.preview_control_id);
+      s.preview_control_id = null;
+    }
+    await this.state.storage.put("session", s);
+    await this.sendPreviewBatch(uid, s, true);
+  }
+
+  async sendPreviewBatch(uid, s, firstBatch) {
+    const start = Number(s.preview_index || 0);
+    const end = Math.min(start + PREVIEW_BATCH_SIZE, s.items.length);
+
+    for (let i = start; i < end; i++) {
+      const item = s.items[i];
+      try {
+        await sendFile(this.token, uid, item, true);
+      } catch (e) {
+        console.error("Preview send failed:", e);
+        await send(this.token, uid, `<b>Preview error</b>\nFile ${i + 1} could not be displayed: ${esc(e.message || "Unknown error")}`);
+      }
+      if (i < end - 1) await sleep(INTERVAL);
+    }
+
+    s.preview_index = end;
+
+    const remaining = s.items.length - end;
+    const rows = [];
+    if (remaining > 0) {
+      rows.push([{ text: "Continue", callback_data: "preview_continue" }, { text: "Send Post", callback_data: "send" }]);
+    } else {
+      rows.push([{ text: "Send Post", callback_data: "send" }]);
+    }
+
+    const control = await send(this.token, uid,
+      remaining > 0
+        ? `<b>Preview complete for this batch.</b>\n\n${remaining} file(s) remaining.`
+        : `<b>Preview complete.</b>\n\nAll ${s.items.length} file(s) have been previewed.`,
+      { inline_keyboard: rows }
+    );
+    s.preview_control_id = control?.message_id || null;
+    await this.state.storage.put("session", s);
+  }
+
+  async renameViewData(uid, s) {
+    if (!s.items?.length) return send(this.token, uid, "No files have been collected yet.", renameReadyKeyboard());
+    const list = s.items.map((x, i) => `${i + 1}. ${esc(x.filename)}`).join("\n");
+    await send(this.token, uid, `<b>Original File Data</b>\n\n${list}`, renameReadyKeyboard());
   }
 
   async renameEditPrompt(uid, s) {
-    if (!s.items?.length) return send(this.token, uid, "No files have been collected yet.", renameEditKeyboard());
+    if (!s.items?.length) return send(this.token, uid, "No files have been collected yet.", renameReadyKeyboard());
     s.awaiting_edit = true;
     await this.state.storage.put("session", s);
-    const list = s.items.map((x, i) => `${i + 1}. ${esc(x.formatted_caption || x.formatted || x.filename)}`).join("\n");
-    return send(this.token, uid,
-      `<b>Edit Caption</b>
-
-${list}
-
-Send the file number followed by the new caption.
-
-Example: <code>2 New Movie Caption</code>`,
-      renameEditKeyboard()
+    const list = s.items.map((x, i) => `${i + 1}. ${esc(x.filename)}`).join("\n");
+    await send(this.token, uid,
+      `<b>Edit File Name</b>\n\n${list}\n\nSend the file number followed by the new file name.\n\nExample: <code>2 Pathaan (2023) 1080p WEB-DL.mkv</code>`,
+      renameReadyKeyboard()
     );
   }
 
   async applyEdit(uid, s, text) {
     const m = text.match(/^(\d+)\s+(.+)$/s);
-    if (!m) return send(this.token, uid, "Invalid format. Use: <code>number new_caption</code>", renameEditKeyboard());
+    if (!m) return send(this.token, uid, "Invalid format. Use: <code>number new_name</code>", renameReadyKeyboard());
 
     const idx = Number(m[1]) - 1;
     if (idx < 0 || idx >= s.items.length) {
-      return send(this.token, uid, "No file exists with that number.", renameEditKeyboard());
+      return send(this.token, uid, "No file exists with that number.", renameReadyKeyboard());
     }
 
+    let name = m[2].trim();
     const item = s.items[idx];
-    item.formatted_caption = m[2].trim();
-    item.formatted = item.formatted_caption;
+    if (!EXT_RE.test(name)) {
+      const origExt = (item.filename.match(EXT_RE) || [""])[0];
+      name += origExt;
+    }
+
+    item.formatted = name;
     item.override = true;
     s.awaiting_edit = false;
-    s.state = "rename_editing";
     await this.state.storage.put("session", s);
-
-    await send(this.token, uid, `Caption for file ${idx + 1} updated successfully.`, renameEditKeyboard());
-    return this.updateSendControl(uid, s);
-  }
-
-  async renameViewData(uid, s) {
-    if (!s.items?.length) return send(this.token, uid, "No files have been collected yet.", renameEditKeyboard());
-    const list = s.items.map((x, i) => `${i + 1}. ${esc(x.formatted_caption || x.formatted || x.filename)}`).join("\n");
-    return send(this.token, uid, `<b>Current Captions</b>
-
-${list}`, renameEditKeyboard());
+    await send(this.token, uid, `File ${idx + 1} updated successfully.\n\n<i>${esc(name)}</i>`, renameReadyKeyboard());
   }
 
   async renameClearAll(uid, s) {
+    if (s.preview_control_id) await del(this.token, uid, s.preview_control_id);
+    if (s.ready_message_id) await del(this.token, uid, s.ready_message_id);
     s.items = [];
     s.awaiting_edit = false;
     s.state = "rename_collecting";
+    s.preview_index = 0;
+    s.preview_control_id = null;
+    s.ready_message_id = null;
     await this.state.storage.put("session", s);
-    return send(this.token, uid, "All pending files were cleared.", renameEditKeyboard());
+
+    if (s.status_id) {
+      await edit(this.token, uid, s.status_id, renameStatusText(0), renameCollectKeyboard());
+    } else {
+      const m = await send(this.token, uid, renameStatusText(0), renameCollectKeyboard());
+      s.status_id = m?.message_id || null;
+      await this.state.storage.put("session", s);
+    }
   }
 
-  async cancelEditSession(uid, s) {
-    // Cancel means cancel sending/edit UI only. It does NOT discard edited files.
-    s.awaiting_edit = false;
-    s.state = s.items?.length ? "rename_editing" : "idle";
-    if (s.send_control_id) {
-      await del(this.token, uid, s.send_control_id);
-      s.send_control_id = null;
+  async renameCancel(uid, s) {
+    if (s.state === "rename_sending") {
+      return send(this.token, uid, "Files are currently being sent. Please wait until the operation finishes.");
     }
+    await this.clearTransientMessages(uid, s);
+    s.mode = null;
+    s.state = "idle";
+    s.items = [];
+    s.awaiting_edit = false;
+    s.preview_index = 0;
     await this.state.storage.put("session", s);
-    return send(this.token, uid,
-      s.items?.length
-        ? "<b>Editing session kept.</b>\n\nNothing was sent. Your edited files remain saved. Use <code>/send</code> when you are ready."
-        : "Nothing was sent.",
-      s.items?.length ? renameEditKeyboard() : mainKeyboard()
-    );
+    await send(this.token, uid, "File Rename cancelled.", removeKeyboard());
+    await send(this.token, uid, "<b>Main Menu</b>", mainKeyboard());
   }
 
   // -------------------------------------------------------------------
@@ -364,42 +418,59 @@ ${list}`, renameEditKeyboard());
     if (text === "Remove") {
       s.thumb_file_id = null;
       s.awaiting_thumb_photo = false;
-      // Do not touch existing edited items. Their source messages remain intact.
-      for (const item of (s.items || [])) item.custom_thumb_file_id = null;
       await this.state.storage.put("session", s);
-      return send(this.token, uid, "Thumbnail removed. Existing edited files were not removed.", thumbKeyboard());
+      return send(this.token, uid, "Thumbnail removed.", thumbKeyboard());
     }
 
     if (s.awaiting_thumb_photo && msg.photo?.length) {
+      // Use the smallest Telegram photo variant. It is JPEG and is much more likely
+      // to satisfy Telegram's thumbnail size limits than the largest photo variant.
       const best = msg.photo[0];
       s.thumb_file_id = best.file_id;
       s.awaiting_thumb_photo = false;
-      // New thumbnail applies to future files. Existing files keep their own setting.
       await this.state.storage.put("session", s);
       return send(this.token, uid,
-        "Thumbnail saved successfully. It will be used for newly received files.",
+        "Thumbnail saved successfully. Send a video or file and the saved thumbnail will be attached.",
         thumbKeyboard()
       );
     }
 
     if (msg.video || msg.document) {
-      if (!s.thumb_file_id) return send(this.token, uid, "No thumbnail is set.", thumbKeyboard());
-      // Return to rename mode and process this exact message immediately.
-      s.mode = "rename";
-      s.state = "rename_editing";
-      await this.state.storage.put("session", s);
-      return this.collect(msg, s);
+      if (!s.thumb_file_id) return send(this.token, uid, "Set a thumbnail first.", thumbKeyboard());
+      return this.applyThumb(uid, msg, s.thumb_file_id);
     }
 
     if (text === "Back") return this.backToMenu(uid, s);
+  }
+
+  async applyThumb(uid, msg, thumbFileId) {
+    const item = getFile(msg);
+    if (!item) return;
+
+    const wait = await send(this.token, uid, "Applying thumbnail...");
+    try {
+      const thumbBuf = await downloadTelegramFile(this.token, thumbFileId);
+      await sendFileWithThumb(this.token, uid, item, thumbBuf, item.filename);
+      if (wait?.message_id) await del(this.token, uid, wait.message_id);
+    } catch (e) {
+      console.error("applyThumb failed:", e);
+      if (wait?.message_id) {
+        await edit(this.token, uid, wait.message_id,
+          `<b>Thumbnail could not be applied.</b>\n\n${esc(e.message || "Telegram rejected the thumbnail.")}`,
+          thumbKeyboard()
+        );
+      } else {
+        await send(this.token, uid, "Thumbnail could not be applied. Please try another photo.", thumbKeyboard());
+      }
+    }
   }
 
   // -------------------------------------------------------------------
   // SEND TO DATABASE CHANNEL
   // -------------------------------------------------------------------
   async startSending(uid, s) {
-    if (!s.items?.length) {
-      return send(this.token, uid, "No edited files are available to send.", mainKeyboard());
+    if (s.state !== "rename_ready" || !s.items?.length) {
+      return send(this.token, uid, "No ready files are available. Complete File Rename first.");
     }
     if (s.state === "rename_sending") return;
 
@@ -408,18 +479,20 @@ ${list}`, renameEditKeyboard());
       return send(this.token, uid, "Cannot send because DATABASE_CHANNEL_ID is not configured.");
     }
 
-    if (s.send_control_id) {
-      await del(this.token, uid, s.send_control_id);
-      s.send_control_id = null;
+    if (s.ready_message_id) {
+      await del(this.token, uid, s.ready_message_id);
+      s.ready_message_id = null;
+    }
+    if (s.preview_control_id) {
+      await del(this.token, uid, s.preview_control_id);
+      s.preview_control_id = null;
     }
 
     const total = s.items.length;
     s.state = "rename_sending";
     s.sent = 0;
     s.total = total;
-    const m = await send(this.token, uid, `<b>Sending started.</b>
-
-0/${total} sent.`);
+    const m = await send(this.token, uid, `<b>Sending started.</b>\n\n0/${total} sent.`);
     s.progress_message_id = m?.message_id || null;
     await this.state.storage.put("session", s);
     await this.state.storage.setAlarm(Date.now());
@@ -435,37 +508,16 @@ ${list}`, renameEditKeyboard());
     }
 
     try {
-      const item = s.items[0];
-      // Do not upload by file_id. Copy the exact Telegram message that the user sent.
-      // copyMessage preserves the media and its thumbnail and lets us replace the caption.
-      const copied = await copySourceMessage(this.token, this.env.DATABASE_CHANNEL_ID, item);
-      const caption = item.formatted_caption || item.original_caption || item.formatted || item.filename;
+      const item = s.items.shift();
+      await sendFile(this.token, this.env.DATABASE_CHANNEL_ID, item, false);
 
-      if (copied?.message_id && caption) {
-        try {
-          await api(this.token, "editMessageCaption", {
-            chat_id: this.env.DATABASE_CHANNEL_ID,
-            message_id: copied.message_id,
-            caption,
-            parse_mode: "HTML"
-          });
-        } catch (e) {
-          // Some media types may not expose an editable caption after copying.
-          // The media itself has already been copied with its original thumbnail.
-          console.error("Caption edit after copy failed:", e);
-        }
-      }
-
-      s.items.shift();
       s.sent = (s.sent || 0) + 1;
       const total = s.total || s.sent;
 
       if (s.items.length) {
         if (s.progress_message_id) {
           await edit(this.token, s.owner_id, s.progress_message_id,
-            `<b>Sending...</b>
-
-${s.sent}/${total} sent.`);
+            `<b>Sending...</b>\n\n${s.sent}/${total} sent.`);
         }
         await this.state.storage.put("session", s);
         await this.state.storage.setAlarm(Date.now() + INTERVAL);
@@ -474,19 +526,24 @@ ${s.sent}/${total} sent.`);
 
       if (s.progress_message_id) {
         await edit(this.token, s.owner_id, s.progress_message_id,
-          `<b>Completed.</b>
-
-${s.sent}/${total} file(s) sent to the database channel.`);
+          `<b>Completed.</b>\n\n${s.sent}/${total} file(s) sent to the database channel.`);
+      } else {
+        await send(this.token, s.owner_id,
+          `<b>Completed.</b>\n\n${s.sent}/${total} file(s) sent to the database channel.`);
       }
 
       const owner = s.owner_id;
       s.mode = null;
       s.state = "idle";
       s.items = [];
-      s.send_control_id = null;
+      s.status_id = null;
+      s.ready_message_id = null;
       s.progress_message_id = null;
+      s.preview_control_id = null;
       s.awaiting_edit = false;
+      s.preview_index = 0;
       await this.state.storage.put("session", s);
+
       await send(this.token, owner, "<b>Main Menu</b>", mainKeyboard());
     } catch (e) {
       console.error("Scheduled send failed:", e);
@@ -506,7 +563,6 @@ ${s.sent}/${total} file(s) sent to the database channel.`);
       ready_message_id: null,
       progress_message_id: null,
       preview_control_id: null,
-      send_control_id: null,
       preview_index: 0,
       thumb_file_id: null,
       awaiting_edit: false,
@@ -569,7 +625,7 @@ function formatFilename(filename) {
   if (langs.length) parts.push(langs.join(" - "));
   if (subs) parts.push("ESubs");
 
-  return `Filename : @backup2k24 ${parts.join(" ")} | Full Movie - Mov4kHub${ext}`;
+  return `Fɪʟᴇɴᴀᴍᴇ : @backup2k24 ${parts.join(" ")} | Full Movie - Mov4kHub${ext}`;
 }
 
 function languageList(n) {
@@ -593,27 +649,6 @@ function normSource(x) {
     DSNP: "DSNP", MAX: "MAX", ATVP: "ATVP", CR: "CR", HMAX: "HMAX"
   };
   return m[String(x).toUpperCase()] || x;
-}
-
-// Copy the exact source Telegram message. This avoids re-uploading by file_id and
-// preserves the source message thumbnail. The copied message is then caption-edited.
-async function copySourceMessage(token, destinationChatId, item) {
-  if (!item.source_chat_id || !item.source_message_id) {
-    throw new Error("Source Telegram message is missing.");
-  }
-  return api(token, "copyMessage", {
-    chat_id: destinationChatId,
-    from_chat_id: item.source_chat_id,
-    message_id: item.source_message_id
-  });
-}
-
-function formatCaption(caption, fallbackName) {
-  const raw = String(caption || "").trim();
-  if (!raw) return formatFilename(fallbackName);
-  const filename = captionFilename(raw);
-  if (filename) return formatFilename(filename);
-  return raw;
 }
 
 // Sends a file while preserving the original thumbnail when possible.
@@ -683,11 +718,21 @@ function mainKeyboard() {
   };
 }
 
-function renameEditKeyboard() {
+function renameCollectKeyboard() {
+  return {
+    keyboard: [[{ text: "Done" }, { text: "Cancel" }]],
+    resize_keyboard: true,
+    is_persistent: true,
+    one_time_keyboard: false
+  };
+}
+
+function renameReadyKeyboard() {
   return {
     keyboard: [
-      [{ text: "Edit Data" }, { text: "View Data" }],
-      [{ text: "Clear All" }, { text: "Back" }]
+      [{ text: "Preview" }, { text: "Edit Data" }],
+      [{ text: "View Data" }, { text: "Clear All" }],
+      [{ text: "Back" }]
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -715,9 +760,7 @@ function renameStatusText(count) {
   if (!count) {
     return "<b>File Rename</b>\n\nSend video or document files. They will be collected here.\n\nPress <b>Done</b> when you have finished.";
   }
-  return `<b>${count} file(s) collected.</b>
-
-Send more files or press <b>Done</b>.`;
+  return `<b>${count} file(s) collected.</b>\n\nSend more files or press <b>Done</b>.`;
 }
 
 // ---------------------------------------------------------------------
