@@ -19,5 +19,10 @@
         "ThumbStore"
       ]
     }
-  ]
+  ],
+
+  "vars": {
+    "ADMIN_IDS": "1830818828",
+    "DATABASE_CHANNEL_ID": "-1003862343915"
+  }
 }
