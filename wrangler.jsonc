@@ -1,5 +1,5 @@
 {
-  "name": "movie-automation",
+  "name": "filerename",
   "main": "index.js",
   "compatibility_date": "2026-08-09",
 
@@ -14,9 +14,9 @@
 
   "migrations": [
     {
-      "tag": "v1",
-      "new_sqlite_classes": [
-        "BotState"
+      "tag": "v2",
+      "deleted_classes": [
+        "ThumbStore"
       ]
     }
   ]
