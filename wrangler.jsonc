@@ -2,25 +2,9 @@
   "name": "filerename",
   "main": "index.js",
   "compatibility_date": "2026-08-09",
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "BOT_STATE",
-        "class_name": "BotState"
-      }
-    ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": [
-        "BotState"
-      ]
-    }
-  ],
   "vars": {
     "ADMIN_IDS": "1830818828",
-    "DATABASE_CHANNEL_ID": "-1003862343915",
+    "CHANNEL_ID": "-1004378372197",
     "BOT_TOKEN": "8791662970:AAHBlpWmLSl8LIDTvZT6PuLLV6gtxfo7YQ8"
   }
 }
